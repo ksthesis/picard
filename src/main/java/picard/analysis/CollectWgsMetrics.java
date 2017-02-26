@@ -118,6 +118,30 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
     @Option(doc="Sample Size used for Theoretical Het Sensitivity sampling. Default is 10000.", optional = true)
     public int SAMPLE_SIZE=10000;
 
+    @Option(doc = "Number of bases of downstream reference to calculate the GC content.")
+    public int GC_REFERENCE_UPSTREAM = -1;
+
+    @Option(doc = "Number of bases of downstream reference to calculate the GC content.")
+    public int GC_REFERENCE_DOWNSTREAM = -1;
+
+    @Option(doc = "GC percentage min.")
+    public int GC_PCT_MIN = -1;
+
+    @Option(doc = "GC percentage max.")
+    public int GC_PCT_MAX = -1;
+
+    @Option(doc = "Insert size min.")
+    public int INSERT_SIZE_MIN = -1;
+
+    @Option(doc = "Insert size max.")
+    public int INSERT_SIZE_MAX = -1;
+
+    @Option(doc = "Mapping quality min.")
+    public int MAPPING_QUALITY_MIN = -1;
+
+    @Option(doc = "Mapping quality max.")
+    public int MAPPING_QUALITY_MAX = -1;
+
     @Option(doc = "An interval list file that contains the positions to restrict the assessment. Please note that " +
             "all bases of reads that overlap these intervals will be considered, even if some of those bases extend beyond the boundaries of " +
             "the interval. The ideal use case for this argument is to use it to restrict the calculation to a subset of (whole) contigs. To " +
@@ -473,7 +497,7 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             if (SequenceUtil.isNoCall(base)) continue;
 
             // add to the collector
-            collector.addInfo(info);
+            collector.addInfo(info, refWalker);
 
             // Record progress and perhaps stop
             progress.record(info.getSequenceName(), info.getPosition());
@@ -636,15 +660,41 @@ static final String USAGE_DETAILS = "<p>This tool collects metrics about the fra
             this.intervals      = intervals;
         }
 
-        public void addInfo(final SamLocusIterator.LocusInfo info) {
+        public void addInfo(final SamLocusIterator.LocusInfo info, final ReferenceSequenceFileWalker refWalker) {
 
             // Figure out the coverage while not counting overlapping reads twice, and excluding various things
             final HashSet<String> readNames = new HashSet<>(info.getRecordAndOffsets().size());
             int pileupSize = 0;
             int unfilteredDepth = 0;
 
+            byte[] gcRefBases = null;
+            double gcPct = -1;
+
             for (final SamLocusIterator.RecordAndOffset recs : info.getRecordAndOffsets()) {
+                if (recs.getRecord().getMappingQuality() < MAPPING_QUALITY_MIN) continue;
+                if (recs.getRecord().getMappingQuality() > MAPPING_QUALITY_MAX) continue;
+                if (recs.getRecord().getInferredInsertSize() < INSERT_SIZE_MIN) continue;
+                if (recs.getRecord().getInferredInsertSize() > INSERT_SIZE_MAX) continue;
+
                 if (recs.getBaseQuality() <= 2) { ++basesExcludedByBaseq;   continue; }
+
+                if (gcRefBases == null) {
+                    final ReferenceSequence ref = refWalker.get(info.getSequenceIndex());
+
+                    final int zeroBasedPosition = info.getPosition() - 1;
+                    final int gcStart = Math.max(0, zeroBasedPosition - GC_REFERENCE_UPSTREAM);
+                    final int gcEnd = Math.min(ref.length(), zeroBasedPosition + GC_REFERENCE_DOWNSTREAM);
+                    final int gcSize = gcEnd - gcStart + 1;
+                    gcRefBases = new byte[gcSize];
+
+                    System.arraycopy(ref.getBases(), gcStart, gcRefBases, 0, gcSize);
+
+                    final double gc = SequenceUtil.calculateGc(gcRefBases);
+                    gcPct = (int) (gc * 100);
+                }
+
+                if (gcPct < GC_PCT_MIN) continue;
+                if (gcPct > GC_PCT_MAX) continue;
 
                 // we add to the base quality histogram any bases that have quality > 2
                 // the raw depth may exceed the coverageCap before the high-quality depth does. So stop counting once we reach the coverage cap.
